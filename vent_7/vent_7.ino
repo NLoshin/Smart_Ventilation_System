@@ -11,13 +11,13 @@
 #include <OneWire.h>
 #include <iarduino_RTC.h>  //Универсальная библиотека для RTC DS1302, DS1307, DS3231
 /****************************Номера датчиков***********************************/
-#define T_RAB 0
-#define T_SPAL 1
-#define T_POL 2
-#define T_PODVOZD 3
-#define T_ULICA 4
-#define T_RECUP 5
-#define T_DHT 6
+#define T_RAB 0		// Рабочая зона			Д1
+#define T_SPAL 1	// Спальная зона 		Д2
+#define T_POL 2		// Теплый пол 			Д4
+#define T_PODVOZD 3 // Подаваемого воздуха 	Д5
+#define T_ULICA 4 	// Уличный воздух 		Д6
+#define T_RECUP 5 	// После рекуператора 	Д7
+#define T_DHT 6		// Вытяжной воздух 		Д3
 #define H_DHT 7
 /****************************Контакты внешнего оборудования********************/
 #define PIN_HEATING 26    // отопление
@@ -73,6 +73,8 @@ struct Ventilation {  //структура для описания событи�
   int in  = 0;
   boolean freez = 0;
 };
+int delUprZasl[3];
+long lastTime;
 Ventilation vent ; //вентиляция
 boolean season; // 0 summer, 1 - winter
 /*************************Модуль вывода значений 1*******************************/
@@ -220,10 +222,11 @@ void speedVent ( byte dSpeed) {
 }
 /*************************Установка заслонок в указанное положение***********/
 void polZasl (byte _In, byte _Out) {
-  analogWrite(PIN_ZASL_IN, map(_In, 0, 100, 0, 255));
-  analogWrite(PIN_ZASL_OUT, map(_Out, 0, 100, 0, 255));
+  vent.in=constrain(_In,0,100);
+  vent.out=constrain(_Out,0,100);
+  analogWrite(PIN_ZASL_IN, map(vent.in, 0, 100, 0, 255));
+  analogWrite(PIN_ZASL_OUT, map(vent.in, 0, 100, 0, 255));
 }
-
 //**************************************************************************************************
 // Запуск проветривания
 //**************************************************************************************************
@@ -287,6 +290,45 @@ void workVent() {   //регулирование подаваемого возд
   printOut("sVent.in:", vent.in);
 }
 //**************************************************************************************************
+// Регулировка проветривания согласно таблице из ТЗ
+//**************************************************************************************************
+void tadblUprVent()
+{	
+	int needTemp = infoTemp[T_PODVOZD];
+	if ( needTemp < 5) 
+	{
+		delUprZasl[1] = 2;
+		delUprZasl[2] = -2;
+		if ( needTemp < 0)  delUprZasl[0] = 5;
+		else if ( needTemp < 5)  delUprZasl[0] = 7;
+	}
+	else if ( needTemp < 14)
+	{
+		delUprZasl[1] = 2;
+		delUprZasl[2] = vent.zasl[0]==100?-2:0;
+		if ( needTemp < 8) delUprZasl[0] = 10;
+		else if ( needTemp < 10) delUprZasl[0] = 20;
+		else delUprZasl[0] = 30;
+	}
+	else if ( needTemp > 18) 
+	{
+		delUprZasl[1]=-2;
+		delUprZasl[2]=vent.zasl[0]==0?2:0;
+		if ( needTemp < 22) delUprZasl[0] = 30;
+		else if ( needTemp < 25) delUprZasl[0] = 20;
+		else if ( needTemp < 28) delUprZasl[0] = 10;
+		else delUprZasl[0] = 5;
+	}
+	// проверка времени
+    long timeT =  time.seconds + time.minutes * 60 + (long)time.Hours*60*60;
+	if ( timeT + delUprZasl[0] >= 86400 ) timeT+=86400;
+	if ( lastTime + delUprZasl[0] > timeT ) 
+	{
+		polZasl(vent.zasl[0]+delUprZasl[1],vent.zasl[1]+delUprZasl[2]);
+		lastTime = currTime();
+	}
+}
+//**************************************************************************************************
 // Алгоритм  «Проветривание»
 //**************************************************************************************************
 void ventilation() {
@@ -313,7 +355,7 @@ void ventilation() {
   Serial.print("lastWork:");
   Serial.print(vent.lastWork);
   Serial.print("\t");
-    if ( (vent.lastWork + vent.timeWork) > 86400 || vent.lastWork + vent.timeNoWork > 86400 ) timeT += 86400;// выключение или выключение выпадает на след день
+    if ( (vent.lastWork + vent.timeWork) >= 86400 || vent.lastWork + vent.timeNoWork > 86400 ) timeT += 86400;// выключение или выключение выпадает на след день
     
     //Если OFF и текущее время больше времени последнего запуска + интервал запуска
     if ( !vent.stateWork && timeT > vent.lastWork + vent.timeNoWork )
