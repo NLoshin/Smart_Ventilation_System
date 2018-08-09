@@ -1,12 +1,13 @@
+#define DEBUG_HEATING
 //#define DEBUG_DATTEMP
-//#define DEBUG_HEATING
 //#define DEBUG_WARMFLOOR
+#define DEBUG
 #define TEMP_POL 18 	// Минимальная температура теплого пола
 #define TEMP_VENT 16 	// Температура приточного воздуха, подаваемого в помещение
 #define REG_VENT_MODE 0 // Выбор режима регулировки: 0 - табличный, 1 - PD регулятор
 #define normT 28      // Задание нормальной температуры воздуха поступающего в комнату для регуляции
 #define kP 2          // Коэффициент пропорциональности
-
+String outBuffer;
 #include <DallasTemperature.h>
 #include "DHT.h"
 #include <EEPROM.h>
@@ -64,8 +65,8 @@ int ustTemp[][5][5] = {
 };
 struct Ventilation {  //структура для описания события
   long lastWork = 0; //последний запуск
-  long timeWork = 1000; //время работы 600 сек
-  long timeNoWork = 30; //интервал 50 мин ( 3000 секунд )
+  long timeWork = 100; //время работы 600 сек
+  long timeNoWork = 100; //интервал 50 мин ( 3000 секунд )
   boolean stateWork = 0; //статус
   bool goodStart = 0;
   bool st = 0;
@@ -77,21 +78,24 @@ struct Ventilation {  //структура для описания событи�
   long lastRegTime = 0;
 };
 int delUprZasl[3];
-long lastTime;
 Ventilation vent ; //вентиляция
 boolean season; // 0 summer, 1 - winter
 /*************************Модуль вывода значений 1*******************************/
-void printOut(String _text, int _value) {
+void printOut(String _text, float _value) {
+#ifdef DEBUG
   Serial.print(_text);
   Serial.print(":");
   Serial.print(_value);
   Serial.print("\t");
+#endif
 }
 /*************************Модуль вывода значений 2*******************************/
-void printOutLn(String _text, int _value) {
+void printOutLn(String _text, float _value) {
+#ifdef DEBUG
   Serial.print(_text);
   Serial.print(":");
   Serial.println(_value);
+#endif
 }
 //**************************************************************************************************
 // Обновление информации с датчиков
@@ -125,6 +129,10 @@ void checkTemp() {
   Serial.print(infoTemp[H_DHT]);
   Serial.println("\t");
 #endif
+
+#ifdef DEBUG_DATTEMP
+  Serial.println("***Temperature***");
+#endif
 }
 //**************************************************************************************************
 // Проверка текущего сезона
@@ -133,16 +141,30 @@ void checkMemSeason () {
   int curTemp = infoTemp[T_ULICA];
   int seasonFromMem = EEPROM.read(0x1);
   if ( curTemp < -5 && seasonFromMem != 1 )
-    EEPROM.write(0x1,1);
+    EEPROM.write(0x1, 1);
   else if ( curTemp > 16 && seasonFromMem != 0 )
-    EEPROM.write(0x1,0);
+    EEPROM.write(0x1, 0);
   season = EEPROM.read(0x1);
+}
+// Отображение времени
+void showTime(){
+  outBuffer = "";
+  if ( time.Hours < 10 )  outBuffer += "0";
+  outBuffer += time.Hours;
+  outBuffer += "h";
+  if ( time.minutes < 10 )  outBuffer += "0";
+  outBuffer += time.minutes;
+  outBuffer += "m";
+  if (time.seconds < 10 )  outBuffer += "0";
+  outBuffer += time.seconds;
+  outBuffer += "s ";
+  Serial.print(outBuffer);
 }
 //**************************************************************************************************
 // Алгоритм «Отопление»
 //**************************************************************************************************
 void heating() {
-  int sumTemp = 0;
+  int sumTemp;
   int ind_1 = 0;
   int needT;
   sumTemp = infoTemp[T_RAB];
@@ -165,12 +187,19 @@ void heating() {
   else needT = ustTemp[season][ind_1][4];
   digitalWrite(PIN_HEATING, needT < sumTemp ? 1 : 0);
 #ifdef DEBUG_HEATING
-  printOut("T_Out", ulTemp);
-  printOut("Season", season);
-  printOut("Ustan", ustTemp[season][ind_1][0]);
-  printOut("T_In", sumTemp);
-  printOut("T_Need", needT);
-  printOutLn("Status", needT < sumTemp ? 1 : 0);
+  outBuffer = "T_Out:";
+  outBuffer += ulTemp;
+  outBuffer += "\tSeason:";
+  outBuffer += season?"Winter":"Summer";
+  outBuffer += "\tUstan:";
+  outBuffer += ustTemp[season][ind_1][0];
+  outBuffer += "\tT_In:";
+  outBuffer += sumTemp;
+  outBuffer += "\tT_Need:";
+  outBuffer += needT;
+  outBuffer += "\tStatus:";
+  outBuffer += needT < sumTemp ? 1 : 0;
+  Serial.println(outBuffer);
 #endif
 }
 //**************************************************************************************************
@@ -180,25 +209,27 @@ void warmfloor() {
   int tempPol = infoTemp[T_POL];
   boolean floorState;
   if (season && tempPol < TEMP_POL)     //если пол остыл ниже 18 градусов
-   floorState = 0;
+    floorState = 0;
   else if (season && tempPol > TEMP_POL + 2) //Если пол нагрелся до 20
     floorState = 1;
   digitalWrite(PIN_POL, floorState);
-  #ifdef DEBUG_WARMFLOOR
-    printOut("Floor state",floorState);
-    printOut("Season",season);
-    printOutLn("Real temp",tempPol);
-    #endif
+#ifdef DEBUG_WARMFLOOR
+  printOut("Floor state", floorState);
+  printOut("Season", season);
+  printOutLn("Real temp", tempPol);
+#endif
 }
 //**************************************************************************************************
 // Защита от обмораживания рекуператора
 //**************************************************************************************************
 void checkFreez() {
-  if ( infoTemp[T_RECUP] <= 0 ) { vent.freez = 1;}
+  if ( infoTemp[T_RECUP] <= 0 ) {
+    vent.freez = 1;
+  }
   if ( vent.freez == 1 )
   {
-	printOutLn("Atention, freez! Temp recup",infoTemp[T_RECUP]);
-    if ( infoTemp[vent.freez] >= infoTemp[T_SPAL]-2 ) 
+    printOutLn("Atention, freez! Temp recup", infoTemp[T_RECUP]);
+    if ( infoTemp[vent.freez] >= infoTemp[T_SPAL] - 2 )
     {
       vent.freez = 0;
       polZasl(100, 0);
@@ -226,8 +257,8 @@ void speedVent ( byte dSpeed) {
 }
 /*************************Установка заслонок в указанное положение***********/
 void polZasl (byte _In, byte _Out) {
-  vent.in=constrain(_In,0,100);
-  vent.out=constrain(_Out,0,100);
+  vent.in = constrain(_In, 0, 100);
+  vent.out = constrain(_Out, 0, 100);
   analogWrite(PIN_ZASL_IN, map(vent.in, 0, 100, 0, 255));
   analogWrite(PIN_ZASL_OUT, map(vent.out, 0, 100, 0, 255));
 }
@@ -238,20 +269,20 @@ void startVent() {
   season = 1;
   if ( season ) // Запуск зимой
   {
-    polZasl(100, 0); //  Открытие клапана рециркуляции
+    //polZasl(100, 0); //  Открытие клапана рециркуляции
     speedVent(1); // Запуск вентилятора
     delay(500); // Прогрев пластин рекуператора
-    if ( infoTemp[T_RECUP] < infoTemp[T_SPAL] - 2 ) 
+    if ( infoTemp[T_RECUP] < infoTemp[T_SPAL] - 2 )
     {
       vent.goodStart = 0;
-      Serial.println(" BAD");
+      //Serial.println(" BAD");
     }
-    else 
+    else
     {
-      polZasl(50, 100); // рециркуляция  - 50, приточный - 100
+      //polZasl(50, 100); // рециркуляция  - 50, приточный - 100
       delay(500); // Прогрев пластин рекуператора
       vent.goodStart = 1;
-      Serial.println(" GOOD");
+      //Serial.println(" GOOD");
     }
   }
   else // запуск летом
@@ -272,7 +303,6 @@ void stopVent  () {
   speedVent(0);
   vent.goodStart = 0;
 }
-
 /*************************Регуляция проветривания****************************/
 void workVent() {   //регулирование подаваемого воздуха в П режиме
   //начальное положение заслонок в зависимости от времени года
@@ -295,47 +325,54 @@ void workVent() {   //регулирование подаваемого возд
 //**************************************************************************************************
 // Регулировка проветривания согласно таблице из ТЗ
 //**************************************************************************************************
-void tadblUprVent() {	
-	int needTemp = infoTemp[T_PODVOZD];
- needTemp = 6;
-	if ( needTemp < 5) 
-	{
-		delUprZasl[1] =vent.in<=98?2:0;
-		delUprZasl[2] =vent.out>=2?-2:0;
-		if ( needTemp < 0)  delUprZasl[0] = 5;
-		else if ( needTemp < 5)  delUprZasl[0] = 7;
-	}
-	else if ( needTemp < 14)
-	{
-		delUprZasl[1] = vent.in<=98?2:0;
-		delUprZasl[2] = vent.in==100?-2:0;
-		if ( needTemp < 8) delUprZasl[0] = 10;
-		else if ( needTemp < 10) delUprZasl[0] = 20;
-		else delUprZasl[0] = 30;
-	}
-	else if ( needTemp > 18) 
-	{
-		delUprZasl[1] = vent.in>=2?-2:0;
-    delUprZasl[2] = vent.in==0?2:0;
-		if ( needTemp < 22) delUprZasl[0] = 30;
-		else if ( needTemp < 25) delUprZasl[0] = 20;
-		else if ( needTemp < 28) delUprZasl[0] = 10;
-		else delUprZasl[0] = 5;
-	}
-	// проверка времени
-  long timeT = (long)time.seconds + (long)time.minutes * 60 + (long)time.Hours*60*60;
-   printOut(" Time0",timeT);
-	if ( timeT + delUprZasl[0] >= 86400 ) timeT+=86400;
-	if ( timeT > lastTime + delUprZasl[0]  ) 
-	{
-    //printOut(" TimeLast",lastTime);
-		polZasl(vent.in+delUprZasl[1],vent.out+delUprZasl[2]);
-		lastTime = timeT>=86400?timeT-86400:timeT;
-	}
-   printOut(" Time",timeT);
-   printOut("VozdIn",needTemp);
-   printOut("Z_IN",vent.in);
-   printOutLn("Z_OUT",vent.out);
+void tadblUprVent() {
+  int needTemp = infoTemp[T_PODVOZD];
+  needTemp = -1;
+  if ( needTemp < 5)
+  {
+    delUprZasl[1] = vent.in <= 98 ? 2 : 0;
+    delUprZasl[2] = vent.out >= 2 ? -2 : 0;
+    if ( needTemp < 0)  delUprZasl[0] = 5;
+    else if ( needTemp < 5)  delUprZasl[0] = 7;
+  }
+  else if ( needTemp < 14)
+  {
+    delUprZasl[1] = vent.in <= 98 ? 2 : 0;
+    delUprZasl[2] = vent.in == 100 ? -2 : 0;
+    if ( needTemp < 8) delUprZasl[0] = 10;
+    else if ( needTemp < 10) delUprZasl[0] = 20;
+    else delUprZasl[0] = 30;
+  }
+  else if ( needTemp > 18)
+  {
+    delUprZasl[1] = vent.in >= 2 ? -2 : 0;
+    delUprZasl[2] = vent.in == 0 ? 2 : 0;
+    if ( needTemp < 22) delUprZasl[0] = 30;
+    else if ( needTemp < 25) delUprZasl[0] = 20;
+    else if ( needTemp < 28) delUprZasl[0] = 10;
+    else delUprZasl[0] = 5;
+  }
+  // проверка времени
+
+  outBuffer += "VozdIn:";
+  outBuffer += needTemp;
+  outBuffer += "\tZ_IN";
+  outBuffer += vent.in;
+  outBuffer += "\tZ_OUT";
+  outBuffer += vent.out;
+  
+  long timeT = time.seconds + time.minutes * 60 + (long)time.Hours * 60 * 60;
+
+  if ( vent.lastRegTime + delUprZasl[0] >= 86400 )
+  {
+    vent.lastRegTime -= 86400;
+  }
+  if ( timeT > vent.lastRegTime + delUprZasl[0]  )
+  {
+    polZasl(vent.in + delUprZasl[1], vent.out + delUprZasl[2]);
+    vent.lastRegTime = timeT >= 86400 ? timeT - 86400 : timeT;
+    outBuffer += "\tUpdate";
+  }
 }
 //**************************************************************************************************
 // Алгоритм  «Проветривание»
@@ -343,63 +380,51 @@ void tadblUprVent() {
 void ventilation() {
   // Читаем состояние внешних контактов
   int rezVent = !(digitalRead(PIN_OFF_1) || digitalRead(PIN_OFF_2)) + !digitalRead(PIN_OFF_1);
-  /*
-  Serial.print("Vent status: ");
-  Serial.print(rezVent);
-  Serial.print("\tTime: ");
-  Serial.print(time.Hours);
-  Serial.print("h");
-  Serial.print(time.minutes);
-  Serial.print("m");
-  Serial.print(time.seconds);
-  Serial.print("s\t");
-  */
-    
+
+  outBuffer = "V:";
+  outBuffer += rezVent;
+  long timeT =  time.seconds + time.minutes * 60 + (long)time.Hours * 60 * 60;
+  if (timeT == 0)
+  {
+    vent.lastWork -= 86400;
+    vent.lastRegTime -= 86400;
+  }
   if ( rezVent == 1 )
   {
-    long timeT =  time.seconds + time.minutes * 60 + (long)time.Hours*60*60;
-    //Serial.print("All Sec:");
-    //Serial.print(timeT);
-    //Serial.print("\t");
-    //Serial.print("lastWork:");
-    //Serial.print(vent.lastWork);
-    //Serial.print("\t");
-    if ( (vent.lastWork + vent.timeWork) >= 86400 || vent.lastWork + vent.timeNoWork > 86400 ) timeT += 86400;// выключение или выключение выпадает на след день
-    
     //Если OFF и текущее время больше времени последнего запуска + интервал запуска
     if ( !vent.stateWork && timeT > vent.lastWork + vent.timeNoWork )
     {
-      Serial.print("Start");
+      outBuffer += "-Start ";
       startVent();
       if ( vent.goodStart )
-      { 
-        vent.stateWork = 1; 
+      {
+        vent.stateWork = 1;
         vent.lastWork = timeT;
       }
     }
     //Если ON и время больше, чем время запуска + время работы.
     else if ( vent.stateWork && timeT > vent.lastWork + vent.timeWork ) //&& vent.goodStart)
     {
-      Serial.print("Stop");
-      vent.stateWork = 0; 
+      outBuffer += "-Stop  ";
+      vent.stateWork = 0;
       vent.lastWork = timeT;
-      stopVent();
+      //stopVent();
     }
     else if ( vent.stateWork )
     {
-      Serial.print("Work");
-	  if (REG_VENT_MODE) workVent();      //Вентиляция работает, регулируем
-	  else tadblUprVent();
+      outBuffer += "-Work  ";
+      if (REG_VENT_MODE) workVent();      //Вентиляция работает, регулируем
+      else tadblUprVent();
     }
     else
-      Serial.print("Off"); //Вентиляция выключена
-      
+      outBuffer += "-Off   ";
   }
   else // работа в режиме принудительного проветривания  или выключение
   {
-    Serial.println("Work by switch"); //Вентиляция выключена
+    outBuffer +="-Work by switch"; //Вентиляция выключена
     speedVent(rezVent);
   }
+  Serial.println(outBuffer);
 }
 //**************************************************************************************************
 // Инициализация модулей
@@ -415,18 +440,21 @@ void setup() {
   pinMode (PIN_ZASL_IN, OUTPUT);
   pinMode (PIN_VENT_1, OUTPUT);
   pinMode (PIN_VENT_2, OUTPUT);
+  time.settime(30, 59, 23);
   speedVent(0);
-  polZasl(0,0);
+  polZasl(0, 0);
+  Serial.println("*****Start work*****");
 }
 //**************************************************************************************************
 // Бесконечный цикл
 //**************************************************************************************************
 void loop() {
   time.gettime();
+  showTime();
   checkTemp();      // обновление датчиков
   checkMemSeason();   // проверка сезонов
   checkFreez();
   if ( !vent.freez )  ventilation();      // Вентиляция
-  //heating();   // Отопление
-  //warmfloor();      // Теплый пол
+  // heating();   // Отопление
+  // warmfloor();      // Теплый пол
 }
